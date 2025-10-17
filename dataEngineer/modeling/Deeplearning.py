@@ -14,14 +14,6 @@ class BertTextClassifier:
     Supports continual fine-tuning (incremental training).
     """
     def __init__(self, model_name='bert-base-uncased', model_dir='./bert_model', max_length=128):
-        """
-        Initializes the BERT classifier.
-
-        Args:
-            model_name (str): The name of the pre-trained BERT model to use from Hugging Face.
-            model_dir (str): Directory to save/load the trained model and its components.
-            max_length (int): The maximum length of a sequence for tokenization.
-        """
         self.model_name = model_name
         self.model_dir = model_dir
         self.max_length = max_length
@@ -32,7 +24,6 @@ class BertTextClassifier:
         os.makedirs(self.model_dir, exist_ok=True)
         self._label_encoder_path = os.path.join(self.model_dir, 'label_encoder.classes_.npy')
         self._config_path = os.path.join(self.model_dir, 'config.json')
-
 
     def _tokenize_data(self, texts):
         """Tokenizes the text data according to the BERT model's requirements."""
@@ -51,8 +42,8 @@ class BertTextClassifier:
     def save(self):
         """Saves the trained model, tokenizer, and label encoder."""
         if self.model:
-            # Save in TensorFlow format (not h5!)
-            self.model.save_pretrained(self.model_dir)
+            # ✅ Save in TensorFlow format only
+            self.model.save_pretrained(self.model_dir, from_pt=False)
             self.tokenizer.save_pretrained(self.model_dir)
             np.save(self._label_encoder_path, self.label_encoder.classes_)
             config = {
@@ -66,7 +57,6 @@ class BertTextClassifier:
         else:
             print("❌ Error: No model to save.")
 
-
     def load(self):
         """Loads a trained model, tokenizer, and label encoder from disk."""
         if not os.path.exists(self._config_path):
@@ -77,7 +67,15 @@ class BertTextClassifier:
                 config = json.load(f)
             self.label_encoder.classes_ = np.load(self._label_encoder_path, allow_pickle=True)
             self.tokenizer = BertTokenizer.from_pretrained(self.model_dir)
-            self.model = TFBertForSequenceClassification.from_pretrained(self.model_dir, from_pt=False)
+
+            try:
+                # Try TensorFlow checkpoint first
+                self.model = TFBertForSequenceClassification.from_pretrained(self.model_dir, from_pt=False)
+            except Exception:
+                # If TensorFlow checkpoint missing, try PyTorch weights
+                print("⚠️ TensorFlow checkpoint not found — trying to convert PyTorch weights...")
+                self.model = TFBertForSequenceClassification.from_pretrained(self.model_dir, from_pt=True)
+
             self.max_length = config['max_length']
             print(f"✅ Model loaded successfully from {self.model_dir}")
             return True
@@ -85,48 +83,30 @@ class BertTextClassifier:
             print(f"❌ Error loading model: {e}")
             return False
 
-
     def train(self, df, text_column, label_column, learning_rate=2e-5, epochs=3, batch_size=16, continuation_learning_rate=1e-5):
-        """
-        Trains or continues training the BERT classification model.
-        If a model exists in model_dir, it will load it and continue training (fine-tuning).
-        If not, it will train a new model from scratch.
-
-        Args:
-            df (pd.DataFrame): The dataframe with new training data.
-            text_column (str): The name of the column with text data.
-            label_column (str): The name of the column with labels.
-            learning_rate (float): Learning rate for initial training.
-            epochs (int): Number of training epochs.
-            batch_size (int): The number of samples per batch.
-            continuation_learning_rate (float): A smaller learning rate for fine-tuning an existing model.
-        """
-        # --- Check if a model already exists ---
+        """Train or continue training the BERT model."""
+        # --- Check if model exists ---
         if os.path.exists(self._config_path):
             print("\n--- Found existing model. Starting continual fine-tuning. ---")
             self.load()
             current_lr = continuation_learning_rate
-            
-            # Verify that new data doesn't contain unseen labels
+
             print("Verifying labels...")
             new_labels = set(df[label_column].unique())
             known_labels = set(self.label_encoder.classes_)
             if not new_labels.issubset(known_labels):
                 unknown = new_labels - known_labels
-                raise ValueError(f"New data contains labels the model was not trained on: {unknown}. Incremental training requires the same set of labels.")
-            
-            # Use the loaded label encoder to transform new labels
+                raise ValueError(f"New data contains unseen labels: {unknown}")
+
             y = self.label_encoder.transform(df[label_column])
         else:
             print("\n--- No model found. Starting training from scratch. ---")
             current_lr = learning_rate
-            # Fit the label encoder for the first time
             y = self.label_encoder.fit_transform(df[label_column])
 
-        # --- Common data preparation steps ---
         X = df[text_column]
         num_labels = len(self.label_encoder.classes_)
-        
+
         X_train, X_val, y_train, y_val = train_test_split(
             X, y, test_size=0.1, random_state=42, stratify=y
         )
@@ -136,20 +116,21 @@ class BertTextClassifier:
         X_train_encoded = self._tokenize_data(X_train)
         X_val_encoded = self._tokenize_data(X_val)
 
-        # --- Model Initialization and Compilation ---
-        if self.model is None: # If we are training from scratch
+        # --- Build or load model ---
+        if self.model is None:
             print("Building new model...")
             self.model = TFBertForSequenceClassification.from_pretrained(
-                self.model_name, num_labels=num_labels
+                self.model_name,
+                num_labels=num_labels,
+                from_pt=False  # ✅ Force TensorFlow weights
             )
 
         optimizer = tf.keras.optimizers.Adam(learning_rate=current_lr)
         loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         metric = tf.keras.metrics.SparseCategoricalAccuracy('accuracy')
-        
+
         self.model.compile(optimizer=optimizer, loss=loss, metrics=[metric])
-        
-        # --- Train the model ---
+
         print(f"Training for {epochs} epochs with learning rate {current_lr}...")
         history = self.model.fit(
             x={'input_ids': X_train_encoded['input_ids'], 'attention_mask': X_train_encoded['attention_mask']},
@@ -160,76 +141,49 @@ class BertTextClassifier:
             ),
             epochs=epochs,
             batch_size=batch_size,
-            # TQDM removed, using default Keras progress bar
-            verbose=1 
+            verbose=1
         )
-        
+
         print("\n✅ Training complete.")
         self.save()
         return history
 
     def predict(self, texts):
-        """
-        Predicts the labels for a list of new texts.
+        """Predict labels for new texts."""
+        if not self.model and not self.load():
+            print("❌ Error: No model available.")
+            return None
 
-        Args:
-            texts (list or pd.Series): A list of strings to classify.
-        
-        Returns:
-            np.array: An array of predicted label strings.
-        """
-        if not self.model:
-            if not self.load():
-                print("Error: No model available. Please train or load a model first.")
-                return None
-        
         if isinstance(texts, pd.Series):
             texts = texts.tolist()
-            
-        # Tokenize the input texts
+
         inputs = self._tokenize_data(pd.Series(texts))
-        
-        # Make predictions
         predictions = self.model.predict(
             {'input_ids': inputs['input_ids'], 'attention_mask': inputs['attention_mask']}
         )
-        
-        # The output of the model are logits, we need to find the class with the highest score
+
         predicted_class_ids = np.argmax(predictions.logits, axis=1)
-        
-        # Decode the predicted IDs back to original labels
         predicted_labels = self.label_encoder.inverse_transform(predicted_class_ids)
-        
         return predicted_labels
 
     def evaluate(self, df, text_column, label_column, batch_size=32):
-        """
-        Evaluates the model on a test set.
+        """Evaluate model on test data."""
+        if not self.model and not self.load():
+            print("❌ Error: No model available to evaluate.")
+            return
 
-        Args:
-            df (pd.DataFrame): Dataframe with test data.
-            text_column (str): Column with text.
-            label_column (str): Column with true labels.
-        """
-        if not self.model:
-            if not self.load():
-                print("Error: No model available to evaluate.")
-                return
-        
         print("\n--- Evaluating model performance ---")
         X_test = df[text_column]
         y_test_labels = df[label_column]
-        
-        # Encode labels and tokenize text
+
         y_test = self.label_encoder.transform(y_test_labels)
         X_test_encoded = self._tokenize_data(X_test)
-        
-        # Evaluate
+
         loss, accuracy = self.model.evaluate(
             {'input_ids': X_test_encoded['input_ids'], 'attention_mask': X_test_encoded['attention_mask']},
             y_test,
             batch_size=batch_size
         )
-        
-        print(f"\nTest Accuracy: {accuracy:.4f}")
-        print(f"Test Loss: {loss:.4f}")
+
+        print(f"\n✅ Test Accuracy: {accuracy:.4f}")
+        print(f"✅ Test Loss: {loss:.4f}")
