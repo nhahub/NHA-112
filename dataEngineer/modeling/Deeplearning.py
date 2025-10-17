@@ -1,269 +1,232 @@
-import os
-import json
-import numpy as np
-import pandas as pd
-import tensorflow as tf
-from transformers import BertTokenizer, TFBertForSequenceClassification
-from sklearn.model_selection import train_test_split
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from transformers import AutoTokenizer, AutoModel
+from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+import pandas as pd
+import numpy as np
+import os
+from google.colab import drive # Import the drive module
 
-class BertTextClassifier:
-    """
-    BERT text classifier with safe save/load and incremental learning (supports adding new labels).
-    Usage: initialize with model_dir pointing to where you want model artifacts saved (e.g. on Drive).
-    Methods: train(df, text_column, label_column, ...), predict(texts), evaluate(df,...), save(), load()
-    """
-    def __init__(self, model_name='bert-base-uncased', model_dir='./bert_model', max_length=128):
-        self.model_name = model_name
-        self.model_dir = model_dir
-        self.max_length = max_length
-        self.model = None
-        self.tokenizer = BertTokenizer.from_pretrained(self.model_name)
-        self.label_encoder = LabelEncoder()
+# ---------------- SENTIMENT CLASSIFIER MODEL ----------------
+class SentimentClassifier(nn.Module):
+    """The neural network architecture for sentiment classification."""
+    def __init__(self, model_name='bert-base-uncased', num_classes=3, dropout_rate=0.3):
+        super(SentimentClassifier, self).__init__()
+        self.pretrained_model = AutoModel.from_pretrained(model_name)
 
-        os.makedirs(self.model_dir, exist_ok=True)
-        self._label_encoder_path = os.path.join(self.model_dir, 'label_encoder.classes_.npy')
-        self._config_path = os.path.join(self.model_dir, 'config.json')
-
-    def _tokenize_data(self, texts):
-        if isinstance(texts, (list, np.ndarray)):
-            s = pd.Series(texts)
-        elif isinstance(texts, pd.Series):
-            s = texts
+        for param in self.pretrained_model.parameters():
+            param.requires_grad = False
+        
+        if hasattr(self.pretrained_model, 'encoder'):
+            layers_to_unfreeze = self.pretrained_model.encoder.layer[-4:]
+        elif hasattr(self.pretrained_model, 'transformer'):
+            layers_to_unfreeze = self.pretrained_model.transformer.layer[-4:]
         else:
-            s = pd.Series(texts)
-        return self.tokenizer(
-            text=s.tolist(),
-            add_special_tokens=True,
-            max_length=self.max_length,
-            truncation=True,
-            padding=True,
-            return_tensors='tf',
-            return_token_type_ids=False,
-            return_attention_mask=True,
+            print("Warning: Could not identify layers to unfreeze.")
+            layers_to_unfreeze = []
+
+        for layer in layers_to_unfreeze:
+            for param in layer.parameters():
+                param.requires_grad = True
+
+        self.dropout = nn.Dropout(dropout_rate)
+        self.classifier = nn.Sequential(
+            nn.Linear(self.pretrained_model.config.hidden_size, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, num_classes)
         )
 
-    # Helper: map textual labels to indices using current label_encoder.classes_
-    def _labels_to_indices(self, labels):
-        classes = list(self.label_encoder.classes_)
-        mapping = {c: i for i, c in enumerate(classes)}
-        return np.array([mapping[l] for l in labels], dtype=np.int32)
+    def forward(self, input_ids, attention_mask):
+        outputs = self.pretrained_model(input_ids=input_ids, attention_mask=attention_mask)
+        pooled_output = outputs.last_hidden_state[:, 0, :]
+        pooled_output = self.dropout(pooled_output)
+        logits = self.classifier(pooled_output)
+        return logits
 
-    def save(self):
-        """Save model, tokenizer and label encoder. Saves TensorFlow format by default."""
-        if self.model is None:
-            print("❌ No model to save.")
-            return
-        # Save TF format model (transformers will write tf_model.h5 / config.json)
-        self.model.save_pretrained(self.model_dir)  # saves tf model files
-        self.tokenizer.save_pretrained(self.model_dir)
-        np.save(self._label_encoder_path, self.label_encoder.classes_)
-        cfg = {
-            'model_name': self.model_name,
-            'max_length': self.max_length,
-            'num_labels': len(self.label_encoder.classes_)
+# ---------------- PYTORCH DATASET ----------------
+class SentimentDataset(Dataset):
+    def __init__(self, texts, labels, tokenizer, max_length=512):
+        self.texts = texts
+        self.labels = labels
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        text = str(self.texts[idx])
+        label = self.labels[idx]
+        encoding = self.tokenizer(
+            text, truncation=True, padding='max_length',
+            max_length=self.max_length, return_tensors='pt'
+        )
+        return {
+            'input_ids': encoding['input_ids'].flatten(),
+            'attention_mask': encoding['attention_mask'].flatten(),
+            'labels': torch.tensor(label, dtype=torch.long)
         }
-        with open(self._config_path, 'w') as f:
-            json.dump(cfg, f)
-        print(f"✅ Saved model + tokenizer + label encoder to {self.model_dir}")
+
+# ---------------- MAIN MODEL HANDLER CLASS ----------------
+class SentimentAnalysisModel:
+    def __init__(self, model_name='bert-base-uncased', model_path='sentiment_classifier.pth'):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model = None
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.label_encoder = LabelEncoder()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Using device: {self.device}")
+
+    def save(self, epoch, optimizer, loss, accuracy):
+        if self.model:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': loss, 'accuracy': accuracy,
+                'label_encoder_classes': self.label_encoder.classes_,
+                'model_name': self.model_name,
+                'num_classes': len(self.label_encoder.classes_)
+            }, self.model_path)
+            print(f"✅ Model saved to {self.model_path} with accuracy: {accuracy:.2f}%")
+        else:
+            print("Error: No model to save.")
 
     def load(self):
-        """Load model, tokenizer and label encoder from model_dir."""
-        if not os.path.exists(self._config_path):
-            print(f"⚠️ No config found in {self.model_dir}. Nothing to load.")
-            return False
+        if not os.path.exists(self.model_path):
+            print(f"Error: Model file not found at {self.model_path}")
+            return None, None
+        # FIX: Added weights_only=False to allow loading the LabelEncoder object
+        checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
+        num_classes = checkpoint['num_classes']
+        model_name = checkpoint.get('model_name', self.model_name)
+        self.model = SentimentClassifier(model_name=model_name, num_classes=num_classes)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model.to(self.device)
+        self.label_encoder.classes_ = checkpoint['label_encoder_classes']
+        optimizer = optim.AdamW(self.model.parameters())
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        print(f"✅ Loaded model from {self.model_path}.")
+        return self.model, optimizer
 
-        try:
-            with open(self._config_path, 'r') as f:
-                cfg = json.load(f)
-            self.max_length = cfg.get('max_length', self.max_length)
-
-            # load label encoder classes
-            if os.path.exists(self._label_encoder_path):
-                self.label_encoder.classes_ = np.load(self._label_encoder_path, allow_pickle=True)
-            else:
-                # if missing, create empty classes (user will fit on training)
-                self.label_encoder.classes_ = np.array([])
-
-            # tokenizer
-            self.tokenizer = BertTokenizer.from_pretrained(self.model_dir)
-
-            # Detect whether directory contains PyTorch weights
-            pytorch_bin = os.path.join(self.model_dir, "pytorch_model.bin")
-            has_pt = os.path.exists(pytorch_bin)
-
-            # Attempt TF load first if no PyTorch file present; otherwise load from_pt=True
-            from_pt_flag = True if has_pt else False
-
-            # If tf files exist, from_pt=False is better; but transformers handles both.
-            try:
-                self.model = TFBertForSequenceClassification.from_pretrained(self.model_dir, from_pt=from_pt_flag)
-            except Exception as e:
-                # fallback: try forcing the other option
-                try:
-                    self.model = TFBertForSequenceClassification.from_pretrained(self.model_dir, from_pt=not from_pt_flag)
-                except Exception as e2:
-                    raise RuntimeError(f"Failed to load model from {self.model_dir}: {e} | {e2}")
-
-            print(f"✅ Loaded model from {self.model_dir} (from_pt={from_pt_flag})")
-            return True
-        except Exception as e:
-            print(f"❌ Error loading model: {e}")
-            return False
-
-    def train(self, df, text_column, label_column,
-              learning_rate=2e-5, epochs=3, batch_size=16, continuation_learning_rate=1e-5):
-        """
-        Train or continue training. Supports adding new labels (incremental learning).
-        If new labels appear, the head is expanded and BERT encoder weights are transferred.
-        """
-        # Prepare labels: check if we already have saved label classes
-        existing_labels = set()
-        if os.path.exists(self._config_path) and os.path.exists(self._label_encoder_path):
-            try:
-                existing_labels = set(np.load(self._label_encoder_path, allow_pickle=True).tolist())
-            except Exception:
-                existing_labels = set()
-
-        new_labels_in_data = set(df[label_column].unique())
-        unseen_labels = new_labels_in_data - existing_labels
-
-        # If a saved model exists, load it
-        if os.path.exists(self._config_path):
-            loaded = self.load()
-            if not loaded:
-                # If load failed, remove inconsistent dir to avoid future confusion and start fresh
-                print("⚠️ Failed to load existing model. Training from scratch.")
-                self.model = None
-
-        # If unseen labels exist and we had a previous label set, we will extend
-        if len(existing_labels) > 0 and len(unseen_labels) > 0:
-            print(f"--- Detected new labels during incremental training: {unseen_labels} ---")
-            # Build new classes array (keep previous order, then append new labels in sorted order)
-            old_classes = list(np.load(self._label_encoder_path, allow_pickle=True))
-            # Append new labels preserving user-supplied order
-            appended = [l for l in df[label_column].unique() if l not in old_classes]
-            new_classes = old_classes + appended
-            self.label_encoder.classes_ = np.array(new_classes, dtype=object)
-            new_num_labels = len(new_classes)
-
-            # Build a new model with new_num_labels and transfer encoder weights from the old model if available
-            print("Building new model with expanded head and transferring encoder weights (if available)...")
-            new_model = TFBertForSequenceClassification.from_pretrained(self.model_name, num_labels=new_num_labels, from_pt=False)
-
-            # if old model exists, transfer encoder/bert weights
-            if self.model is not None:
-                try:
-                    # Transfer the BERT encoder weights (the base model)
-                    new_model.bert.set_weights(self.model.bert.get_weights())
-                    print("✅ Copied BERT encoder weights to the new model.")
-                except Exception as e:
-                    print(f"⚠️ Failed to copy encoder weights: {e} — continuing with fresh encoder.")
-
-            # replace model with new one (classifier head is new & randomly initialized)
-            self.model = new_model
-
+    def train(self, df, text_column, label_column, num_epochs=5, batch_size=16, 
+              learning_rate=2e-5, continuation_learning_rate=1e-5):
+        optimizer = None
+        if os.path.exists(self.model_path):
+            print("\n--- Found existing model. Starting incremental training. ---")
+            self.model, optimizer = self.load()
+            current_lr = continuation_learning_rate
+            encoded_labels = self.label_encoder.transform(df[label_column])
         else:
-            # No unseen labels or first-time training: fit/refresh label encoder normally
-            if len(existing_labels) == 0:
-                # Fit label encoder for the first time
-                self.label_encoder.fit(df[label_column])
-            else:
-                # keep existing classes (no changes)
-                if len(self.label_encoder.classes_) == 0:
-                    self.label_encoder.classes_ = np.load(self._label_encoder_path, allow_pickle=True)
+            print("\n--- No model found. Starting training from scratch. ---")
+            encoded_labels = self.label_encoder.fit_transform(df[label_column])
+            num_classes = len(self.label_encoder.classes_)
+            self.model = SentimentClassifier(model_name=self.model_name, num_classes=num_classes)
+            self.model.to(self.device)
+            current_lr = learning_rate
 
-        # Now we have self.label_encoder.classes_ set to the desired classes
-        num_labels = len(self.label_encoder.classes_)
-        if num_labels == 0:
-            raise ValueError("No labels found to train on.")
+        texts = df[text_column].values
+        print("Categories:", list(self.label_encoder.classes_))
 
-        # Tokenize and split
-        X = df[text_column]
-        y = self._labels_to_indices(df[label_column].tolist())
-
-        X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=0.1, random_state=42, stratify=y
+        train_texts, val_texts, train_labels, val_labels = train_test_split(
+            texts, encoded_labels, test_size=0.2, random_state=42
         )
-        print(f"Training on {len(X_train)} samples, validating on {len(X_val)} samples.")
+        train_dataset = SentimentDataset(train_texts, train_labels, self.tokenizer)
+        val_dataset = SentimentDataset(val_texts, val_labels, self.tokenizer)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size)
+        
+        if optimizer is None:
+            optimizer = optim.AdamW(self.model.parameters(), lr=current_lr)
+        
+        for g in optimizer.param_groups:
+            g['lr'] = current_lr
+        criterion = nn.CrossEntropyLoss()
+        
+        print(f"Starting training for {num_epochs} epochs with learning rate {current_lr}...")
+        
+        for epoch in range(num_epochs):
+            self.model.train()
+            total_loss = 0
+            for batch in train_loader:
+                optimizer.zero_grad()
+                input_ids = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                labels = batch['labels'].to(self.device)
+                outputs = self.model(input_ids, attention_mask)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
 
-        X_train_encoded = self._tokenize_data(X_train)
-        X_val_encoded = self._tokenize_data(X_val)
+            self.model.eval()
+            correct, total, val_loss = 0, 0, 0
+            with torch.no_grad():
+                for batch in val_loader:
+                    input_ids = batch['input_ids'].to(self.device)
+                    attention_mask = batch['attention_mask'].to(self.device)
+                    labels = batch['labels'].to(self.device)
+                    outputs = self.model(input_ids, attention_mask)
+                    loss = criterion(outputs, labels)
+                    val_loss += loss.item()
+                    _, predicted = torch.max(outputs.data, 1)
+                    total += labels.size(0)
+                    correct += (predicted == labels).sum().item()
 
-        # If we don't have a model instance yet, instantiate one with correct num_labels
-        if self.model is None:
-            print("Building model from pretrained transformer (TensorFlow weights).")
-            self.model = TFBertForSequenceClassification.from_pretrained(self.model_name, num_labels=num_labels, from_pt=False)
+            accuracy = 100 * correct / total if total > 0 else 0
+            avg_train_loss = total_loss / len(train_loader)
+            avg_val_loss = val_loss / len(val_loader) if len(val_loader) > 0 else 0
 
-        # If model exists but its classification head size differs from current num_labels, rebuild model and transfer encoder
-        try:
-            current_head_out = self.model.classifier.out_features if hasattr(self.model, 'classifier') and hasattr(self.model.classifier, 'out_features') else None
-        except Exception:
-            current_head_out = None
+            print(f"Epoch {epoch+1}/{num_epochs} | "
+                  f"Train Loss: {avg_train_loss:.4f} | "
+                  f"Val Loss: {avg_val_loss:.4f} | "
+                  f"Accuracy: {accuracy:.2f}%")
+        
+        self.save(epoch, optimizer, avg_val_loss, accuracy)
+        print("✅ Training session complete!")
 
-        # Compile
-        current_lr = continuation_learning_rate if os.path.exists(self._config_path) else learning_rate
-        optimizer = tf.keras.optimizers.Adam(learning_rate=current_lr)
-        loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-        metric = tf.keras.metrics.SparseCategoricalAccuracy('accuracy')
-        self.model.compile(optimizer=optimizer, loss=loss, metrics=[metric])
+    # --- NEWLY ADDED PREDICTION METHOD ---
+    def predict(self, text):
+        """Predicts the sentiment for a single piece of text."""
+        if not self.model:
+            print("Model not in memory. Attempting to load from path...")
+            self.load()
+            if not self.model:
+                print("Error: Could not load model. Please train a model first.")
+                return None, None, None
 
-        # Fit
-        print(f"Training for {epochs} epochs with lr={current_lr} ...")
-        history = self.model.fit(
-            x={'input_ids': X_train_encoded['input_ids'], 'attention_mask': X_train_encoded['attention_mask']},
-            y=y_train,
-            validation_data=(
-                {'input_ids': X_val_encoded['input_ids'], 'attention_mask': X_val_encoded['attention_mask']},
-                y_val
-            ),
-            epochs=epochs,
-            batch_size=batch_size,
-            verbose=1
-        )
+        self.model.eval() # Set the model to evaluation mode
 
-        # Save updated model and label encoder/classes
-        # Ensure label encoder classes file is written before saving model config
-        np.save(self._label_encoder_path, self.label_encoder.classes_)
-        cfg = {
-            'model_name': self.model_name,
-            'max_length': self.max_length,
-            'num_labels': len(self.label_encoder.classes_)
-        }
-        with open(self._config_path, 'w') as f:
-            json.dump(cfg, f)
+        # Tokenize the input text
+        encoding = self.tokenizer(text, truncation=True, padding='max_length',
+                                  max_length=512, return_tensors='pt')
+        
+        input_ids = encoding['input_ids'].to(self.device)
+        attention_mask = encoding['attention_mask'].to(self.device)
 
-        self.save()  # save model + tokenizer + label encoder
-        return history
+        # Get model predictions
+        with torch.no_grad():
+            outputs = self.model(input_ids, attention_mask)
+            probabilities = torch.softmax(outputs, dim=1)
+            predicted_class_id = torch.argmax(probabilities, dim=1).item()
+            confidence = probabilities[0][predicted_class_id].item()
 
-    def predict(self, texts):
-        """Return predicted label strings for input texts (list or pd.Series)."""
-        if self.model is None:
-            if not self.load():
-                raise RuntimeError("No model available. Train or save a model first.")
-        if isinstance(texts, str):
-            texts = [texts]
-        inputs = self._tokenize_data(pd.Series(texts))
-        outputs = self.model.predict({'input_ids': inputs['input_ids'], 'attention_mask': inputs['attention_mask']})
-        logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
-        preds = np.argmax(logits, axis=1)
-        # map indices back to labels
-        classes = list(self.label_encoder.classes_)
-        return np.array([classes[i] for i in preds])
+        # Decode the prediction
+        predicted_sentiment = self.label_encoder.inverse_transform([predicted_class_id])[0]
 
-    def evaluate(self, df, text_column, label_column, batch_size=32):
-        """Evaluate model on a dataframe and print accuracy & loss."""
-        if self.model is None:
-            if not self.load():
-                raise RuntimeError("No model available to evaluate.")
-        X_test = df[text_column]
-        y_test = self._labels_to_indices(df[label_column].tolist())
-        X_test_encoded = self._tokenize_data(X_test)
-        loss, acc = self.model.evaluate(
-            {'input_ids': X_test_encoded['input_ids'], 'attention_mask': X_test_encoded['attention_mask']},
-            y_test,
-            batch_size=batch_size,
-            verbose=1
-        )
-        print(f"\nTest Loss: {loss:.4f}  Test Accuracy: {acc:.4f}")
-        return loss, acc
+        # Get top predictions
+        top_probs, top_indices = torch.topk(probabilities[0], k=min(3, len(self.label_encoder.classes_)))
+        sentiments = self.label_encoder.inverse_transform(top_indices.cpu().numpy())
+        confidences = top_probs.cpu().numpy()
+        top_predictions = {s: float(c) for s, c in zip(sentiments, confidences)}
+
+        return predicted_sentiment, confidence, top_predictions
+
