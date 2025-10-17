@@ -68,17 +68,19 @@ class BertTextClassifier:
 
     def load(self):
         """Loads a trained model, tokenizer, and label encoder from disk."""
-        ## MODIFIED: Changed check to use the config path for better reliability.
         if not os.path.exists(self._config_path):
-             print(f"Error: Model configuration not found in directory {self.model_dir}/")
-             return False
+            print(f"Error: Model configuration not found in directory {self.model_dir}/")
+            return False
         try:
             with open(self._config_path, 'r') as f:
                 config = json.load(f)
             
             self.label_encoder.classes_ = np.load(self._label_encoder_path, allow_pickle=True)
             self.tokenizer = BertTokenizer.from_pretrained(self.model_dir)
-            self.model = TFBertForSequenceClassification.from_pretrained(self.model_dir)
+            
+            # --- THIS IS THE CORRECTED LINE ---
+            self.model = TFBertForSequenceClassification.from_pretrained(self.model_dir, from_pt=False) 
+            
             self.max_length = config['max_length']
             
             print(f"Model loaded successfully from {self.model_dir}/")
