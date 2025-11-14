@@ -16,7 +16,7 @@ class MultiOutputClassifier(nn.Module):
     The neural network architecture for multi-output classification.
     It has two separate classification heads, one for 'category' and one for 'sub_category'.
     """
-    def __init__(self, model_name='bert-base-uncased', num_classes_category=2, num_classes_subcategory=2, dropout_rate=0.3):
+    def __init__(self, model_name='bert-base-uncased', num_classes_category=10, num_classes_subcategory=4, dropout_rate=0.3):
         super(MultiOutputClassifier, self).__init__()
         self.pretrained_model = AutoModel.from_pretrained(model_name)
 
