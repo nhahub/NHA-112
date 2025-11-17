@@ -6,6 +6,7 @@ from nltk.tokenize import word_tokenize
 import re
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
+from deep_translator import GoogleTranslator  
 
 try:
     stopwords.words("english")
@@ -74,3 +75,9 @@ def text_preprocessing_sklearn_pipeline(
     print("Text cleaning and lemmatization complete.")
 
     return df
+
+def translate_arabic_to_english(text: str) -> str:
+    try:
+        return GoogleTranslator(source='auto', target='en').translate(text)
+    except Exception:
+        return text  # fallback if translation fails
