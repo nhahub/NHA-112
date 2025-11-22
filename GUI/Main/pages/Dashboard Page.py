@@ -6,7 +6,7 @@ import os
 # Load data
 data_path = os.path.join(
     os.path.dirname(__file__),
-    "../../../data/interim/reddit_complaints_dataset.csv"
+    "../../data/interim/reddit_complaints_dataset.csv"
 )
 df = pd.read_csv(data_path)
 
