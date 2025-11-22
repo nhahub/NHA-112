@@ -1,7 +1,8 @@
 import streamlit as st
 import os
 import sys
-
+import gdown
+import torch
 # ============================================================
 # FIX PYTHON PATH SO IMPORTS WORK FROM gui/main/
 # ============================================================
@@ -14,7 +15,7 @@ sys.path.append(PROJECT_ROOT)
 # ============================================================
 from dataEngineer.modeling.MLmodel2 import MultiTaskTextClassifier
 from dataEngineer.pipeLine import *
-
+from dataEngineer.modeling.Deeplearning2 import MultiOutputClassificationModel
 # ============================================================
 # STREAMLIT CONFIG
 # ============================================================
@@ -103,9 +104,7 @@ if submitted:
         st.error("⚠️ Model failed to load. Make sure the 'models/' folder exists in your repo.")
         st.error(str(e))
 
-    import gdown
-    import torch
-    from dataEngineer.modeling.deep_model import MultiOutputClassificationModel  # adjust if needed
+
     
     # ============================================================
     # DEEP LEARNING MODEL PREDICTION
@@ -164,4 +163,5 @@ with col2:
 col1, col2, col3, g, t = st.columns([2, 3, 1, 3, 2])
 with col3:
     selected = st.feedback("thumbs")
+
 
