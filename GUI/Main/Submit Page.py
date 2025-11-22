@@ -103,6 +103,55 @@ if submitted:
         st.error("⚠️ Model failed to load. Make sure the 'models/' folder exists in your repo.")
         st.error(str(e))
 
+    import gdown
+    import torch
+    from dataEngineer.modeling.deep_model import MultiOutputClassificationModel  # adjust if needed
+    
+    # ============================================================
+    # DEEP LEARNING MODEL PREDICTION
+    # ============================================================
+    st.subheader("Deep Learning (BERT) Prediction")
+    
+    # ---- MODEL PATH ----
+    DL_MODEL_PATH = os.path.join(PROJECT_ROOT, "models/best_cv_classifier.pth")
+    
+    # ---- GOOGLE DRIVE DIRECT FILE LINK (FIX THIS) ----
+    model_id = '1BHpawVMowc8D8yJAeFde6FS6Zq62OE07'
+    DL_MODEL_URL = f"https://drive.google.com/uc?id={model_id}"   # <-- replace with real ID
+    
+    # ---- DOWNLOAD MODEL IF MISSING ----
+    if not os.path.exists(DL_MODEL_PATH):
+        st.info("Downloading BERT Deep Learning model... this may take 10–20 seconds.")
+        gdown.download(DL_MODEL_URL, DL_MODEL_PATH, quiet=False)
+    
+    # ---- LOAD MODEL (cached so it loads only once) ----
+    @st.cache_resource
+    def load_dl_model():
+        return MultiOutputClassificationModel(
+            model_name='distilbert-base-uncased',
+            model_path=DL_MODEL_PATH
+        )
+    
+    dl_model = load_dl_model()
+    
+    # ---- RUN PREDICTION ----
+    try:
+        dl_pred = dl_model.predict(comment)
+    
+        st.write("### Deep Learning Output")
+        st.write(f"**Category:** {dl_pred['category']['prediction']} (Conf: {dl_pred['category']['confidence']:.2f})")
+        st.write(f"**Sub-Category:** {dl_pred['sub_category']['prediction']} (Conf: {dl_pred['sub_category']['confidence']:.2f})")
+    
+        st.write("**Top Category Predictions:**")
+        st.write(dl_pred['category']['top_predictions'])
+    
+        st.write("**Top Sub-Category Predictions:**")
+        st.write(dl_pred['sub_category']['top_predictions'])
+    
+    except Exception as e:
+        st.error("⚠️ Deep Learning model failed to run.")
+        st.error(str(e))
+
 # ============================================================
 # FEEDBACK SECTION
 # ============================================================
@@ -115,3 +164,4 @@ with col2:
 col1, col2, col3, g, t = st.columns([2, 3, 1, 3, 2])
 with col3:
     selected = st.feedback("thumbs")
+
