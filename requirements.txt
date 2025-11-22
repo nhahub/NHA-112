@@ -94,4 +94,5 @@ transformers
 deep_translator
 loguru
 nltk
+gdown
 
