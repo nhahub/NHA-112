@@ -92,3 +92,4 @@ torch
 scikit-learn
 transformers
 deep_translator
+loguru
