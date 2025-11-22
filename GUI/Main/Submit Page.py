@@ -1,9 +1,28 @@
 import streamlit as st
+import os
+import sys
 
-# Set page configuration and settings
-st.set_page_config(page_title="Citizens Issues Submission ", layout="wide",page_icon="📝")
+# -------------------------
+# IMPORT YOUR PROJECT MODULES
+# -------------------------
+# Assuming the "dataEngineer" folder is in the root of your repo
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Background image with animation witth CSS
+from dataEngineer.modeling.MLmodel2 import MultiTaskTextClassifier
+from dataEngineer.pipeLine import *
+
+# -------------------------
+# STREAMLIT CONFIG
+# -------------------------
+st.set_page_config(
+    page_title="Citizens Issues Submission",
+    layout="wide",
+    page_icon="📝"
+)
+
+# -------------------------
+# BACKGROUND IMAGE CSS
+# -------------------------
 page_bg_img = """
 <style>
 [data-testid="stAppViewContainer"] {
@@ -18,11 +37,16 @@ page_bg_img = """
 }
 </style>
 """
-
 st.markdown(page_bg_img, unsafe_allow_html=True)
 
-# This creates the form with the title
-st.title("Citizen Issues Submission ")
+# -------------------------
+# PAGE TITLE
+# -------------------------
+st.title("Citizen Issues Submission")
+
+# -------------------------
+# FORM
+# -------------------------
 with st.form("client_form"):
     name = st.text_input("Client Name")
     email = st.text_input("Email")
@@ -31,22 +55,60 @@ with st.form("client_form"):
 
     submitted = st.form_submit_button("Submit")
 
+# -------------------------
+# WHEN FORM IS SUBMITTED
+# -------------------------
 if submitted:
-    # This line of code saves the data in session state {its like a temporary storage} and then we
-    #     recall it in the Prediction Page
-    st.session_state['Citizen'] = [name,email,phone,comment]
+
+    # Save to session state
+    st.session_state['Citizen'] = [name, email, phone, comment]
     st.toast("Form submitted successfully!", icon="✅")
 
-# We can use this to send the data to the model and get the prediction
+    # -------------------------
+    # LOAD MODEL SAFE FOR DEPLOYMENT
+    # -------------------------
 
-#if submitted:
-#    category, sub_category, confidence = predict_category(comment)
-#st.session_state['Prediction'] = ["category", "sub_category", 91.569]
+    MODEL_DIR = "models/my_multi_task_models_afterCleaning_logostic"  
+    tasks = ['problem_type', 'category']
 
-# Feedback section
-col1, col2, col3 = st.columns([2,2,1])
-with col2 :
-    st.markdown("###### was this submission helpful?")
-col1, col2, col3 ,g,t= st.columns([2,3,1,3,2])
-with col3 :
+    try:
+        model = MultiTaskTextClassifier(
+            label_columns=tasks,
+            model_dir=MODEL_DIR,
+            model_type='logreg',
+            use_hyperparameter_tuning=True
+        )
+
+        # Predict
+        new_texts = [comment]
+        predictions = model.predict(new_texts)
+
+        # -------------------------
+        # SHOW RESULTS ON PAGE
+        # -------------------------
+        st.subheader("Predicted Classification:")
+        st.write(f"**Problem Type:** {predictions['problem_type'][0]}")
+        st.write(f"**Category:** {predictions['category'][0]}")
+
+        # Save in session state if needed for next page
+        st.session_state['Prediction'] = [
+            predictions['problem_type'][0],
+            predictions['category'][0]
+        ]
+
+    except Exception as e:
+        st.error("⚠️ The model could not be loaded. Make sure the models folder is uploaded.")
+        st.error(str(e))
+
+# -------------------------
+# FEEDBACK SECTION
+# -------------------------
+st.markdown("---")
+col1, col2, col3 = st.columns([2, 2, 1])
+
+with col2:
+    st.markdown("###### Was this submission helpful?")
+
+col1, col2, col3, g, t = st.columns([2, 3, 1, 3, 2])
+with col3:
     selected = st.feedback("thumbs")
