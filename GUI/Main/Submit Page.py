@@ -2,27 +2,31 @@ import streamlit as st
 import os
 import sys
 
-# -------------------------
-# IMPORT YOUR PROJECT MODULES
-# -------------------------
-# Assuming the "dataEngineer" folder is in the root of your repo
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# ============================================================
+# FIX PYTHON PATH SO IMPORTS WORK FROM gui/main/
+# ============================================================
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "../../"))
+sys.path.append(PROJECT_ROOT)
 
+# ============================================================
+# IMPORT YOUR PROJECT MODULES
+# ============================================================
 from dataEngineer.modeling.MLmodel2 import MultiTaskTextClassifier
 from dataEngineer.pipeLine import *
 
-# -------------------------
+# ============================================================
 # STREAMLIT CONFIG
-# -------------------------
+# ============================================================
 st.set_page_config(
     page_title="Citizens Issues Submission",
     layout="wide",
     page_icon="📝"
 )
 
-# -------------------------
-# BACKGROUND IMAGE CSS
-# -------------------------
+# ============================================================
+# BACKGROUND CSS
+# ============================================================
 page_bg_img = """
 <style>
 [data-testid="stAppViewContainer"] {
@@ -39,14 +43,14 @@ page_bg_img = """
 """
 st.markdown(page_bg_img, unsafe_allow_html=True)
 
-# -------------------------
+# ============================================================
 # PAGE TITLE
-# -------------------------
+# ============================================================
 st.title("Citizen Issues Submission")
 
-# -------------------------
+# ============================================================
 # FORM
-# -------------------------
+# ============================================================
 with st.form("client_form"):
     name = st.text_input("Client Name")
     email = st.text_input("Email")
@@ -55,23 +59,24 @@ with st.form("client_form"):
 
     submitted = st.form_submit_button("Submit")
 
-# -------------------------
-# WHEN FORM IS SUBMITTED
-# -------------------------
+# ============================================================
+# HANDLE FORM SUBMISSION
+# ============================================================
 if submitted:
 
-    # Save to session state
+    # Store form data
     st.session_state['Citizen'] = [name, email, phone, comment]
     st.toast("Form submitted successfully!", icon="✅")
 
     # -------------------------
-    # LOAD MODEL SAFE FOR DEPLOYMENT
+    # MODEL PATH (FIXED FOR DEPLOYMENT)
     # -------------------------
+    MODEL_DIR = os.path.join(PROJECT_ROOT, "models/my_multi_task_models_afterCleaning_logostic")
 
-    MODEL_DIR = "models/my_multi_task_models_afterCleaning_logostic"  
     tasks = ['problem_type', 'category']
 
     try:
+        # Load model
         model = MultiTaskTextClassifier(
             label_columns=tasks,
             model_dir=MODEL_DIR,
@@ -83,26 +88,24 @@ if submitted:
         new_texts = [comment]
         predictions = model.predict(new_texts)
 
-        # -------------------------
-        # SHOW RESULTS ON PAGE
-        # -------------------------
-        st.subheader("Predicted Classification:")
+        # Display results
+        st.subheader("Predicted Classification")
         st.write(f"**Problem Type:** {predictions['problem_type'][0]}")
         st.write(f"**Category:** {predictions['category'][0]}")
 
-        # Save in session state if needed for next page
+        # Store prediction for another page if needed
         st.session_state['Prediction'] = [
             predictions['problem_type'][0],
             predictions['category'][0]
         ]
 
     except Exception as e:
-        st.error("⚠️ The model could not be loaded. Make sure the models folder is uploaded.")
+        st.error("⚠️ Model failed to load. Make sure the 'models/' folder exists in your repo.")
         st.error(str(e))
 
-# -------------------------
+# ============================================================
 # FEEDBACK SECTION
-# -------------------------
+# ============================================================
 st.markdown("---")
 col1, col2, col3 = st.columns([2, 2, 1])
 
