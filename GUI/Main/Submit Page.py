@@ -1,9 +1,20 @@
 import streamlit as st
+import pandas as pd
+import os
 
-# Set page configuration and settings
-st.set_page_config(page_title="Citizens Issues Submission ", layout="wide",page_icon="📝")
 
-# Background image with animation witth CSS
+# ============================================================
+# STREAMLIT CONFIG
+# ============================================================
+st.set_page_config(
+    page_title="Citizens Issues Submission",
+    layout="wide",
+    page_icon="📝"
+)
+
+# ============================================================
+# BACKGROUND CSS
+# ============================================================
 page_bg_img = """
 <style>
 [data-testid="stAppViewContainer"] {
@@ -18,12 +29,17 @@ page_bg_img = """
 }
 </style>
 """
-
 st.markdown(page_bg_img, unsafe_allow_html=True)
 
-# This creates the form with the title
-st.title("Citizen Issues Submission ")
-with st.form("client_form"):
+# ============================================================
+# PAGE TITLE
+# ============================================================
+st.title("Citizen Issues Submission")
+
+# ============================================================
+# FORM
+# ============================================================
+with st.form("citizen_form"):
     name = st.text_input("Client Name")
     email = st.text_input("Email")
     phone = st.text_input("Phone Number")
@@ -31,22 +47,27 @@ with st.form("client_form"):
 
     submitted = st.form_submit_button("Submit")
 
+# ============================================================
+# HANDLE FORM SUBMISSION
+# ============================================================
 if submitted:
-    # This line of code saves the data in session state {its like a temporary storage} and then we
-    #     recall it in the Prediction Page
-    st.session_state['Citizen'] = [name,email,phone,comment]
+
+    # Store form data
+    st.session_state['Citizen'] = [name, email, phone, comment]
     st.toast("Form submitted successfully!", icon="✅")
 
-# We can use this to send the data to the model and get the prediction
+    
+    
+# ============================================================
+# FEEDBACK SECTION
+# ============================================================
+st.markdown("---")
+col1, col2, col3 = st.columns([2, 2, 1])
 
-#if submitted:
-#    category, sub_category, confidence = predict_category(comment)
-#st.session_state['Prediction'] = ["category", "sub_category", 91.569]
+with col2:
+    st.markdown("###### Was this submission helpful?")
 
-# Feedback section
-col1, col2, col3 = st.columns([2,2,1])
-with col2 :
-    st.markdown("###### was this submission helpful?")
-col1, col2, col3 ,g,t= st.columns([2,3,1,3,2])
-with col3 :
+col1, col2, col3, g, t = st.columns([2, 3, 1, 3, 2])
+with col3:
     selected = st.feedback("thumbs")
+
